@@ -14,6 +14,7 @@
 #include "tag.h"
 #include "alloc.h"
 #include "commit-graph.h"
+#include "odb-warp.h"
 
 unsigned int get_max_object_index(const struct repository *repo)
 {
@@ -336,11 +337,11 @@ struct object *parse_object_with_flags(struct repository *r,
 	if (obj && obj->parsed)
 		return obj;
 
-	if (skip_hash || !save_commit_buffer) {
-		struct commit *commit = lookup_commit_in_graph(r, repl);
-		if (commit)
-			return &commit->object;
-	}
+	obj = odb_warp_parse_object(r, oid, repl, flags);
+	if (obj)
+		return obj;
+
+	obj = lookup_object(r, oid);
 
 	if ((!obj || obj->type == OBJ_NONE || obj->type == OBJ_BLOB ||
 	     (skip_hash && discard_tree && obj->type == OBJ_TREE))) {

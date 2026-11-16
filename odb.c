@@ -1,5 +1,6 @@
 #include "git-compat-util.h"
 #include "abspath.h"
+#include "commit.h"
 #include "commit-graph.h"
 #include "config.h"
 #include "environment.h"
@@ -26,6 +27,8 @@
 #include "tmp-objdir.h"
 #include "trace2.h"
 #include "write-or-die.h"
+#define ODB_WARP_IMPLEMENTATION
+#include "odb-warp.h"
 
 /*
  * NEEDSWORK: we're using "core.ignoreCase" to deduplicate alternates that
@@ -556,15 +559,8 @@ static enum odb_read_status do_oid_object_info_extended(struct object_database *
 	if (!odb_source_read_object_info(odb->inmemory_objects, oid, oi, flags, NULL))
 		return 0;
 
-	if (odb->repo && (!oi || (oi->typep && !oi->sizep && !oi->disk_sizep &&
-				  !oi->delta_base_oid && !oi->contentp &&
-				  !oi->whencep))) {
-		if (lookup_commit_in_graph(odb->repo, real)) {
-			if (oi && oi->typep)
-				*oi->typep = OBJ_COMMIT;
-			return 0;
-		}
-	}
+	if (!odb_warp_read_object_info(odb, real, oi, flags))
+		return 0;
 
 	while (1) {
 		struct odb_source *source;
@@ -779,11 +775,7 @@ void *odb_read_object_peeled(struct object_database *odb,
 	struct object_id actual_oid;
 
 	oidcpy(&actual_oid, oid);
-	if (required_type == OBJ_TREE && odb->repo) {
-		struct commit *c = lookup_commit_in_graph(odb->repo, &actual_oid);
-		if (c)
-			oidcpy(&actual_oid, get_commit_tree_oid(c));
-	}
+	odb_warp_peel_to_tree_oid(odb->repo, &actual_oid, required_type);
 	while (1) {
 		int ref_length = -1;
 		const char *ref_type = NULL;

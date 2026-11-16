@@ -889,11 +889,14 @@ static void sha1_object(const void *data, struct object_entry *obj_entry,
 
 	assert(data || obj_entry);
 
-	if (startup_info->have_repository &&
-	    (strict || !git_env_bool("GIT_INDEX_PACK_NO_COLLISION_CHECK", 0))) {
+	if (startup_info->have_repository) {
+		static int no_collision_check = -1;
 		read_lock();
-		collision_test_needed = odb_has_object(the_repository->objects, oid,
-						       ODB_HAS_OBJECT_FETCH_PROMISOR);
+		if (no_collision_check < 0)
+			no_collision_check = git_env_bool("GIT_INDEX_PACK_NO_COLLISION_CHECK", 0);
+		if (strict || !no_collision_check)
+			collision_test_needed = odb_has_object(the_repository->objects, oid,
+							       ODB_HAS_OBJECT_FETCH_PROMISOR);
 		read_unlock();
 	}
 

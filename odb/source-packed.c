@@ -94,20 +94,6 @@ static enum odb_read_status odb_source_packed_read_object_info(struct odb_source
 	if (flags & OBJECT_INFO_SECOND_READ)
 		odb_source_prepare(source, ODB_PREPARE_FLUSH_CACHES);
 
-	if (!oi && !(flags & OBJECT_INFO_SECOND_READ)) {
-		struct packfile_list_entry *l;
-
-		odb_source_prepare(source, 0);
-		if (packed->midx && midx_has_oid(packed->midx, oid))
-			return 0;
-		for (l = packed->packs.head; l; l = l->next) {
-			if (!l->pack->multi_pack_index &&
-			    find_pack_entry_one(oid, l->pack))
-				return 0;
-		}
-		return ODB_READ_NOT_FOUND;
-	}
-
 	if (!find_pack_entry(packed, oid, &e, flags, &bad_pack)) {
 		/*
 		 * The lookup may have failed because the object is known to be

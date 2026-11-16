@@ -13,6 +13,7 @@
 #include "wildmatch.h"
 #include "object-name.h"
 #include "odb.h"
+#include "odb-warp.h"
 #include "oid-array.h"
 #include "repo-settings.h"
 #include "repository.h"
@@ -2358,10 +2359,37 @@ static int get_object(struct ref_array_item *ref, int deref,
 
 	if (!deref && !is_null_oid(&ref->peeled_oid) &&
 	    !oi->info.contentp && !oi->info.sizep &&
-	    !oi->info.disk_sizep && !oi->info.delta_base_oid) {
+	    !oi->info.disk_sizep && !oi->info.delta_base_oid &&
+	    !oi->info.mtimep && !oi->info.source_infop) {
 		oi->type = OBJ_TAG;
 		grab_common_values(ref->value, deref, oi);
 		return 0;
+	}
+
+	if (oi->info.contentp && !oi->info.disk_sizep &&
+	    !oi->info.delta_base_oid && !oi->info.mtimep &&
+	    !oi->info.source_infop) {
+		int i, can_warp = 1;
+		for (i = 0; i < used_atom_cnt; i++) {
+			enum atom_type at = used_atom[i].atom_type;
+			if (!!deref != (used_atom[i].name[0] == '*') ||
+			    used_atom[i].source != SOURCE_OBJ)
+				continue;
+			if (at != ATOM_TREE && at != ATOM_PARENT &&
+			    at != ATOM_NUMPARENT && at != ATOM_OBJECT &&
+			    at != ATOM_TYPE && at != ATOM_COMMITTERDATE &&
+			    at != ATOM_TAGGERDATE && at != ATOM_CREATORDATE &&
+			    at != ATOM_AUTHORDATE) {
+				can_warp = 0;
+				break;
+			}
+		}
+		if (can_warp &&
+		    !odb_warp_synthesize_header(
+			    the_repository, &oi->oid,
+			    (!deref && !is_null_oid(&ref->peeled_oid)) ? &ref->peeled_oid : NULL,
+			    &oi->type, &oi->size, &oi->content))
+			goto warped_content;
 	}
 
 	if (odb_read_object_info_extended(the_repository->objects, &oi->oid, &oi->info,
@@ -2373,6 +2401,7 @@ static int get_object(struct ref_array_item *ref, int deref,
 	if (oi->info.disk_sizep && oi->disk_size < 0)
 		BUG("Object size is less than zero.");
 
+warped_content:
 	if (oi->info.contentp) {
 		ret = grab_values(ref->value, deref, oi, ref->refname, err, &eaten);
 		if (ret < 0)

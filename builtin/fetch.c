@@ -965,10 +965,6 @@ static int update_local_ref(struct ref *ref,
 	struct commit *current = NULL, *updated;
 	int fast_forward = 0;
 
-	if (!odb_has_object(the_repository->objects, &ref->new_oid,
-			    ODB_HAS_OBJECT_RECHECK_PACKED | ODB_HAS_OBJECT_FETCH_PROMISOR))
-		die(_("object %s not found"), oid_to_hex(&ref->new_oid));
-
 	if (oideq(&ref->old_oid, &ref->new_oid)) {
 		if (verbosity > 0)
 			ref_update_display_info_append(display_array, '=', '=',
@@ -978,6 +974,10 @@ static int update_local_ref(struct ref *ref,
 						       &ref->new_oid);
 		return 0;
 	}
+
+	if (!odb_has_object(the_repository->objects, &ref->new_oid,
+			    ODB_HAS_OBJECT_RECHECK_PACKED | ODB_HAS_OBJECT_FETCH_PROMISOR))
+		die(_("object %s not found"), oid_to_hex(&ref->new_oid));
 
 	if (!update_head_ok &&
 	    !is_null_oid(&ref->old_oid) &&
@@ -1132,7 +1132,9 @@ static const struct object_id *iterate_ref_map(void *cb_data)
 	struct ref **rm = cb_data;
 	struct ref *ref = *rm;
 
-	while (ref && ref->status == REF_STATUS_REJECT_SHALLOW)
+	while (ref && (ref->status == REF_STATUS_REJECT_SHALLOW ||
+		       (ref->peer_ref && !is_null_oid(&ref->peer_ref->old_oid) &&
+			oideq(&ref->peer_ref->old_oid, &ref->old_oid))))
 		ref = ref->next;
 	if (!ref)
 		return NULL;
@@ -1415,8 +1417,10 @@ static int check_exist_and_connected(struct ref *ref_map)
 	 * we need all direct targets to exist.
 	 */
 	for (r = rm; r; r = r->next) {
-		if (!odb_has_object(the_repository->objects, &r->old_oid,
-				    ODB_HAS_OBJECT_RECHECK_PACKED))
+		if (r->peer_ref && !is_null_oid(&r->peer_ref->old_oid) &&
+		    oideq(&r->peer_ref->old_oid, &r->old_oid))
+			continue;
+		if (!odb_has_object(the_repository->objects, &r->old_oid, 0))
 			return -1;
 	}
 

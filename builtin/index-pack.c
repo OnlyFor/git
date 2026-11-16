@@ -889,7 +889,8 @@ static void sha1_object(const void *data, struct object_entry *obj_entry,
 
 	assert(data || obj_entry);
 
-	if (startup_info->have_repository) {
+	if (startup_info->have_repository &&
+	    (strict || !git_env_bool("GIT_INDEX_PACK_NO_COLLISION_CHECK", 0))) {
 		read_lock();
 		collision_test_needed = odb_has_object(the_repository->objects, oid,
 						       ODB_HAS_OBJECT_FETCH_PROMISOR);

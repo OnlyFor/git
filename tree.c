@@ -4,6 +4,7 @@
 #include "object-name.h"
 #include "odb.h"
 #include "commit.h"
+#include "commit-graph.h"
 #include "alloc.h"
 #include "tree-walk.h"
 #include "repository.h"
@@ -215,6 +216,15 @@ void free_tree_buffer(struct tree *tree)
 struct tree *repo_parse_tree_indirect(struct repository *r,
 				      const struct object_id *oid)
 {
-	struct object *obj = parse_object(r, oid);
+	struct commit *c = lookup_commit_in_graph(r, oid);
+	struct object *obj;
+
+	if (c) {
+		struct tree *tree = repo_get_commit_tree(r, c);
+		if (tree && !repo_parse_tree(r, tree))
+			return tree;
+		return NULL;
+	}
+	obj = parse_object(r, oid);
 	return (struct tree *)repo_peel_to_type(r, NULL, 0, obj, OBJ_TREE);
 }

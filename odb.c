@@ -556,6 +556,16 @@ static enum odb_read_status do_oid_object_info_extended(struct object_database *
 	if (!odb_source_read_object_info(odb->inmemory_objects, oid, oi, flags, NULL))
 		return 0;
 
+	if (odb->repo && (!oi || (oi->typep && !oi->sizep && !oi->disk_sizep &&
+				  !oi->delta_base_oid && !oi->contentp &&
+				  !oi->whencep))) {
+		if (lookup_commit_in_graph(odb->repo, real)) {
+			if (oi && oi->typep)
+				*oi->typep = OBJ_COMMIT;
+			return 0;
+		}
+	}
+
 	while (1) {
 		struct odb_source *source;
 
@@ -769,6 +779,11 @@ void *odb_read_object_peeled(struct object_database *odb,
 	struct object_id actual_oid;
 
 	oidcpy(&actual_oid, oid);
+	if (required_type == OBJ_TREE && odb->repo) {
+		struct commit *c = lookup_commit_in_graph(odb->repo, &actual_oid);
+		if (c)
+			oidcpy(&actual_oid, get_commit_tree_oid(c));
+	}
 	while (1) {
 		int ref_length = -1;
 		const char *ref_type = NULL;

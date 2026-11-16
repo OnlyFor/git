@@ -1,6 +1,7 @@
 #define USE_THE_REPOSITORY_VARIABLE
 
 #include "git-compat-util.h"
+#include "config.h"
 #include "gettext.h"
 #include "hex.h"
 #include "odb.h"
@@ -117,7 +118,8 @@ int check_connected(oid_iterate_fn fn, void *cb_data,
 		strvec_push(&rev_list.args, opt->shallow_file);
 	}
 	strvec_push(&rev_list.args,"rev-list");
-	strvec_push(&rev_list.args, "--objects");
+	if (!git_env_bool("GIT_CONNECTED_NO_OBJECTS", 0))
+		strvec_push(&rev_list.args, "--objects");
 	strvec_push(&rev_list.args, "--stdin");
 	if (repo_has_promisor_remote(the_repository))
 		strvec_push(&rev_list.args, "--exclude-promisor-objects");

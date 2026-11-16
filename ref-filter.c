@@ -2356,6 +2356,14 @@ static int get_object(struct ref_array_item *ref, int deref,
 		oi->info.typep = &oi->type;
 	}
 
+	if (!deref && !is_null_oid(&ref->peeled_oid) &&
+	    !oi->info.contentp && !oi->info.sizep &&
+	    !oi->info.disk_sizep && !oi->info.delta_base_oid) {
+		oi->type = OBJ_TAG;
+		grab_common_values(ref->value, deref, oi);
+		return 0;
+	}
+
 	if (odb_read_object_info_extended(the_repository->objects, &oi->oid, &oi->info,
 					  OBJECT_INFO_LOOKUP_REPLACE)) {
 		ret = strbuf_addf_ret(err, -1, _("missing object %s for %s"),
@@ -2610,7 +2618,7 @@ static int populate_value(struct ref_array_item *ref, struct strbuf *err)
 	}
 
 	if (need_tagged)
-		oi.info.contentp = &oi.content;
+		oi.info.typep = &oi.type;
 	if (!memcmp(&oi.info, &empty, sizeof(empty)) &&
 	    !memcmp(&oi_deref.info, &empty, sizeof(empty)))
 		return 0;

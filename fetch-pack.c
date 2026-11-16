@@ -139,15 +139,27 @@ static struct commit *deref_without_lazy_fetch(const struct object_id *oid,
 	enum object_type type;
 	struct object_info info = { .typep = &type };
 	struct commit *commit;
+	struct object *obj;
 
 	commit = lookup_commit_in_graph(the_repository, oid);
 	if (commit) {
-		if (mark_tags_complete_and_check_obj_db) {
+		if (mark_tags_complete_and_check_obj_db &&
+		    git_env_bool("GIT_FETCH_CHECK_GRAPH_OIDS", 0)) {
 			if (!odb_has_object(the_repository->objects, oid,
 					    ODB_HAS_OBJECT_RECHECK_PACKED))
 				die_in_commit_graph_only(oid);
 		}
 		return commit;
+	}
+
+	obj = lookup_object(the_repository, oid);
+	if (obj && obj->type == OBJ_TAG && ((struct tag *)obj)->tagged) {
+		if (mark_tags_complete_and_check_obj_db)
+			obj->flags |= COMPLETE;
+		oid = &((struct tag *)obj)->tagged->oid;
+		commit = lookup_commit_in_graph(the_repository, oid);
+		if (commit)
+			return commit;
 	}
 
 	while (1) {
@@ -190,7 +202,8 @@ static int rev_list_insert_ref(struct fetch_negotiator *negotiator,
 
 static int rev_list_insert_ref_oid(const struct reference *ref, void *cb_data)
 {
-	return rev_list_insert_ref(cb_data, ref->oid);
+	return rev_list_insert_ref(cb_data,
+				   ref->peeled_oid ? ref->peeled_oid : ref->oid);
 }
 
 enum ack_type {
@@ -658,6 +671,16 @@ static int mark_complete(const struct object_id *oid)
 
 static int mark_complete_oid(const struct reference *ref, void *cb_data UNUSED)
 {
+	if (ref->peeled_oid) {
+		struct tag *t = lookup_tag(the_repository, ref->oid);
+		if (t) {
+			t->object.flags |= COMPLETE;
+			if (!t->tagged)
+				t->tagged = (struct object *)lookup_commit_in_graph(
+					the_repository, ref->peeled_oid);
+		}
+		return mark_complete(ref->peeled_oid);
+	}
 	return mark_complete(ref->oid);
 }
 
@@ -803,17 +826,38 @@ static void mark_complete_and_common_ref(struct fetch_negotiator *negotiator,
 
 	save_commit_buffer = 0;
 
+	/*
+	 * Mark local refs (and peeled tags in packed-refs) first so that
+	 * annotated tag objects are registered in memory before scanning
+	 * remote refs for cutoff.
+	 */
+	trace2_region_enter("fetch-pack", "mark_complete_local_refs", NULL);
+	if (!args->deepen) {
+		struct refs_for_each_ref_options opts = {
+			.flags = REFS_FOR_EACH_INCLUDE_BROKEN,
+		};
+
+		refs_for_each_ref_ext(get_main_ref_store(the_repository),
+				      mark_complete_oid, NULL, &opts);
+		for_each_cached_alternate(NULL, mark_alternate_complete);
+	}
+	trace2_region_leave("fetch-pack", "mark_complete_local_refs", NULL);
+
 	trace2_region_enter("fetch-pack", "parse_remote_refs_and_find_cutoff", NULL);
 	for (ref = *refs; ref; ref = ref->next) {
 		struct commit *commit;
 
 		commit = lookup_commit_in_graph(the_repository, &ref->old_oid);
 		if (!commit) {
-			struct object *o;
+			struct object *o = lookup_object(the_repository, &ref->old_oid);
 
-			if (!odb_has_object(the_repository->objects, &ref->old_oid, 0))
+			if (o && o->type != OBJ_COMMIT)
 				continue;
-			o = parse_object(the_repository, &ref->old_oid);
+			if (!o || !o->parsed) {
+				if (!odb_has_object(the_repository->objects, &ref->old_oid, 0))
+					continue;
+				o = parse_object(the_repository, &ref->old_oid);
+			}
 			if (!o || o->type != OBJ_COMMIT)
 				continue;
 
@@ -830,23 +874,11 @@ static void mark_complete_and_common_ref(struct fetch_negotiator *negotiator,
 	}
 	trace2_region_leave("fetch-pack", "parse_remote_refs_and_find_cutoff", NULL);
 
-	/*
-	 * This block marks all local refs as COMPLETE, and then recursively marks all
-	 * parents of those refs as COMPLETE.
-	 */
-	trace2_region_enter("fetch-pack", "mark_complete_local_refs", NULL);
-	if (!args->deepen) {
-		struct refs_for_each_ref_options opts = {
-			.flags = REFS_FOR_EACH_INCLUDE_BROKEN,
-		};
-
-		refs_for_each_ref_ext(get_main_ref_store(the_repository),
-				      mark_complete_oid, NULL, &opts);
-		for_each_cached_alternate(NULL, mark_alternate_complete);
-		if (cutoff)
-			mark_recent_complete_commits(args, cutoff);
+	if (!args->deepen && cutoff) {
+		trace2_region_enter("fetch-pack", "mark_recent_complete_commits", NULL);
+		mark_recent_complete_commits(args, cutoff);
+		trace2_region_leave("fetch-pack", "mark_recent_complete_commits", NULL);
 	}
-	trace2_region_leave("fetch-pack", "mark_complete_local_refs", NULL);
 
 	/*
 	 * Mark all complete remote refs as common refs.

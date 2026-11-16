@@ -336,43 +336,40 @@ struct object *parse_object_with_flags(struct repository *r,
 	if (obj && obj->parsed)
 		return obj;
 
-	if (skip_hash) {
+	if (skip_hash || !save_commit_buffer) {
 		struct commit *commit = lookup_commit_in_graph(r, repl);
 		if (commit)
 			return &commit->object;
 	}
 
-	if ((!obj || obj->type == OBJ_NONE || obj->type == OBJ_BLOB) &&
-	    odb_read_object_info(r->objects, oid, NULL) == OBJ_BLOB) {
-		if (!skip_hash) {
-			struct odb_stream *stream = odb_stream_from_object(r->objects, oid, NULL);
+	if ((!obj || obj->type == OBJ_NONE || obj->type == OBJ_BLOB ||
+	     (skip_hash && discard_tree && obj->type == OBJ_TREE))) {
+		enum object_type info_type = odb_read_object_info(r->objects, oid, NULL);
+		if (info_type == OBJ_BLOB &&
+		    (!obj || obj->type == OBJ_NONE || obj->type == OBJ_BLOB)) {
+			if (!skip_hash) {
+				struct odb_stream *stream = odb_stream_from_object(r->objects, oid, NULL);
 
-			if (!stream) {
-				error(_("unable to open object stream for %s"), oid_to_hex(oid));
-				return NULL;
-			}
+				if (!stream) {
+					error(_("unable to open object stream for %s"), oid_to_hex(oid));
+					return NULL;
+				}
 
-			if (stream_object_signature(r, stream, repl) < 0) {
-				error(_("hash mismatch %s"), oid_to_hex(oid));
+				if (stream_object_signature(r, stream, repl) < 0) {
+					error(_("hash mismatch %s"), oid_to_hex(oid));
+					odb_stream_close(stream);
+					return NULL;
+				}
+
 				odb_stream_close(stream);
-				return NULL;
 			}
-
-			odb_stream_close(stream);
+			parse_blob_buffer(lookup_blob(r, oid));
+			return lookup_object(r, oid);
 		}
-		parse_blob_buffer(lookup_blob(r, oid));
-		return lookup_object(r, oid);
-	}
-
-	/*
-	 * If the caller does not care about the tree buffer and does not
-	 * care about checking the hash, we can simply verify that we
-	 * have the on-disk object with the correct type.
-	 */
-	if (skip_hash && discard_tree &&
-	    (!obj || obj->type == OBJ_NONE || obj->type == OBJ_TREE) &&
-	    odb_read_object_info(r->objects, oid, NULL) == OBJ_TREE) {
-		return &lookup_tree(r, oid)->object;
+		if (skip_hash && discard_tree && info_type == OBJ_TREE &&
+		    (!obj || obj->type == OBJ_NONE || obj->type == OBJ_TREE)) {
+			return &lookup_tree(r, oid)->object;
+		}
 	}
 
 	buffer = odb_read_object(r->objects, oid, &type, &size);

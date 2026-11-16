@@ -15,6 +15,7 @@
 #include "list-objects-filter-options.h"
 #include "packfile.h"
 #include "odb.h"
+#include "odb-warp.h"
 #include "trace.h"
 #include "environment.h"
 
@@ -163,6 +164,15 @@ static void process_tree(struct traversal_context *ctx,
 		die("bad tree object");
 	if (obj->flags & (UNINTERESTING | SEEN))
 		return;
+	if (revs->diffopt.flags.quick && !revs->include_check_obj) {
+		odb_warp_set_quiet_walk(1);
+		if (odb_warp_is_midx_bitmapped_tree(revs->repo, &obj->oid)) {
+			odb_warp_set_quiet_walk(0);
+			obj->flags |= SEEN;
+			return;
+		}
+		odb_warp_set_quiet_walk(0);
+	}
 	if (revs->include_check_obj &&
 	    !revs->include_check_obj(&tree->object, revs->include_check_data))
 		return;
@@ -286,6 +296,8 @@ void mark_edges_uninteresting(struct rev_info *revs,
 {
 	struct commit_list *list;
 
+	odb_warp_set_quiet_walk(revs->diffopt.flags.quick);
+
 	if (sparse) {
 		struct oidset set;
 		oidset_init(&set, 16);
@@ -334,6 +346,7 @@ void mark_edges_uninteresting(struct rev_info *revs,
 			}
 		}
 	}
+	odb_warp_set_quiet_walk(0);
 }
 
 static void add_pending_tree(struct rev_info *revs, struct tree *tree)

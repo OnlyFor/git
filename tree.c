@@ -215,6 +215,6 @@ void free_tree_buffer(struct tree *tree)
 struct tree *repo_parse_tree_indirect(struct repository *r,
 				      const struct object_id *oid)
 {
-	struct object *obj = parse_object(r, oid);
+	struct object *obj = parse_object_with_flags(r, oid, PARSE_OBJECT_SKIP_HASH_CHECK);
 	return (struct tree *)repo_peel_to_type(r, NULL, 0, obj, OBJ_TREE);
 }

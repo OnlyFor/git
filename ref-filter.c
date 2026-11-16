@@ -191,6 +191,7 @@ static struct used_atom {
 	const char *name;
 	cmp_type type;
 	info_source source;
+	unsigned int in_format:1;
 	union {
 		char color[COLOR_MAXLEN];
 		struct align align;
@@ -1058,8 +1059,11 @@ static int parse_ref_filter_atom(struct ref_format *format,
 	/* Do we have the atom already used elsewhere? */
 	for (i = 0; i < used_atom_cnt; i++) {
 		int len = strlen(used_atom[i].name);
-		if (len == ep - atom && !memcmp(used_atom[i].name, atom, len))
+		if (len == ep - atom && !memcmp(used_atom[i].name, atom, len)) {
+			if (format && format->format)
+				used_atom[i].in_format = 1;
 			return i;
+		}
 	}
 
 	/* Is the atom a valid one? */
@@ -1085,6 +1089,7 @@ static int parse_ref_filter_atom(struct ref_format *format,
 	used_atom[at].name = xmemdupz(atom, ep - atom);
 	used_atom[at].type = valid_atom[i].cmp_type;
 	used_atom[at].source = valid_atom[i].source;
+	used_atom[at].in_format = !!(format && format->format);
 	if (used_atom[at].source == SOURCE_OBJ) {
 		if (*atom == '*')
 			oi_deref.info.contentp = &oi_deref.content;
@@ -2377,9 +2382,10 @@ static int get_object(struct ref_array_item *ref, int deref,
 				continue;
 			if (at != ATOM_TREE && at != ATOM_PARENT &&
 			    at != ATOM_NUMPARENT && at != ATOM_OBJECT &&
-			    at != ATOM_TYPE && at != ATOM_COMMITTERDATE &&
-			    at != ATOM_TAGGERDATE && at != ATOM_CREATORDATE &&
-			    at != ATOM_AUTHORDATE) {
+			    at != ATOM_TYPE &&
+			    !((at == ATOM_COMMITTERDATE || at == ATOM_TAGGERDATE ||
+			       at == ATOM_CREATORDATE) &&
+			      !used_atom[i].in_format && !strchr(used_atom[i].name, ':'))) {
 				can_warp = 0;
 				break;
 			}

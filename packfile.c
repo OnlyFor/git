@@ -535,7 +535,10 @@ static int open_packed_git_1(struct packed_git *p)
 	ssize_t read_result;
 	const unsigned hashsz = p->repo->hash_algo->rawsz;
 
-	if (!p->multi_pack_index && open_pack_index(p))
+	int skip_idx = p->multi_pack_index && p->repo &&
+		p->repo->objects && p->repo->objects->commit_graph;
+
+	if (!skip_idx && open_pack_index(p))
 		return error("packfile %s index unavailable", p->pack_name);
 
 	if (!pack_max_fds) {
@@ -564,7 +567,7 @@ static int open_packed_git_1(struct packed_git *p)
 	} else if (p->pack_size != st.st_size)
 		return error("packfile %s size changed", p->pack_name);
 
-	if (p->multi_pack_index && !p->index_data) {
+	if (skip_idx && !p->index_data) {
 		if (p->pack_size < (off_t)(sizeof(hdr) + hashsz))
 			return error("file %s is far too short to be a packfile", p->pack_name);
 		return 0;

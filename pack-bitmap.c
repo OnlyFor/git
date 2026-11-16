@@ -659,7 +659,7 @@ static int load_bitmap(struct repository *r, struct bitmap_index *bitmap_git,
 	bitmap_git->bitmaps = kh_init_oid_map();
 	bitmap_git->ext_index.positions = kh_init_oid_pos();
 
-	if (load_reverse_index(r, bitmap_git))
+	if (!bitmap_is_midx(bitmap_git) && load_reverse_index(r, bitmap_git))
 		return -1;
 
 	if (!(bitmap_git->commits = read_bitmap_1(bitmap_git)) ||

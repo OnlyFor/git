@@ -37,6 +37,7 @@
 #include "branch.h"
 #include "promisor-remote.h"
 #include "commit-graph.h"
+#include "odb-warp.h"
 #include "shallow.h"
 #include "trace.h"
 #include "trace2.h"
@@ -1134,7 +1135,9 @@ static const struct object_id *iterate_ref_map(void *cb_data)
 
 	while (ref && (ref->status == REF_STATUS_REJECT_SHALLOW ||
 		       (ref->peer_ref && !is_null_oid(&ref->peer_ref->old_oid) &&
-			oideq(&ref->peer_ref->old_oid, &ref->old_oid))))
+			oideq(&ref->peer_ref->old_oid, &ref->old_oid) &&
+			odb_warp_has_midx(the_repository) &&
+			odb_warp_deref_to_commit(the_repository, &ref->old_oid, 0))))
 		ref = ref->next;
 	if (!ref)
 		return NULL;

@@ -9,6 +9,7 @@
 #include "object-name.h"
 #include "object-file.h"
 #include "odb.h"
+#include "odb-warp.h"
 #include "oidset.h"
 #include "tag.h"
 #include "blob.h"
@@ -109,6 +110,8 @@ void mark_tree_uninteresting(struct repository *r, struct tree *tree)
 	if (obj->flags & UNINTERESTING)
 		return;
 	obj->flags |= UNINTERESTING;
+	if (odb_warp_is_midx_bitmapped_tree(r, &obj->oid))
+		return;
 	mark_tree_contents_uninteresting(r, tree);
 }
 

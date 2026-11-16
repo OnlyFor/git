@@ -885,7 +885,9 @@ struct object *repo_peel_to_type(struct repository *r, const char *name, int nam
 	if (name && !namelen)
 		namelen = strlen(name);
 	while (1) {
-		if (!o || (!o->parsed && !parse_object(r, &o->oid)))
+		if (!o || (!o->parsed &&
+			   !parse_object_with_flags(r, &o->oid,
+						    PARSE_OBJECT_SKIP_HASH_CHECK)))
 			return NULL;
 		if (expected_type == OBJ_ANY || o->type == expected_type)
 			return o;
@@ -958,15 +960,37 @@ static int peel_onion(struct repository *r, const char *name, int len,
 	if (get_oid_1(r, name, sp - name - 2, &outer, lookup_flags))
 		return -1;
 
-	o = parse_object(r, &outer);
+	o = parse_object_with_flags(r, &outer,
+				    PARSE_OBJECT_SKIP_HASH_CHECK |
+				    PARSE_OBJECT_DISCARD_TREE);
 	if (!o)
 		return -1;
 	if (!expected_type) {
 		o = deref_tag(r, o, name, sp - name - 2);
-		if (!o || (!o->parsed && !parse_object(r, &o->oid)))
+		if (!o || (!o->parsed &&
+			   !parse_object_with_flags(r, &o->oid,
+						    PARSE_OBJECT_SKIP_HASH_CHECK |
+						    PARSE_OBJECT_DISCARD_TREE)))
 			return -1;
 		oidcpy(oid, &o->oid);
 		return 0;
+	}
+
+	if (expected_type == OBJ_TREE) {
+		while (o && o->type == OBJ_TAG && ((struct tag *)o)->tagged)
+			o = ((struct tag *)o)->tagged;
+		if (o && o->type == OBJ_COMMIT) {
+			if (!o->parsed)
+				o = parse_object_with_flags(r, &o->oid,
+							    PARSE_OBJECT_SKIP_HASH_CHECK);
+			if (o && o->type == OBJ_COMMIT) {
+				struct tree *t = repo_get_commit_tree(r, (struct commit *)o);
+				if (t && odb_read_object_info(r->objects, &t->object.oid, NULL) == OBJ_TREE) {
+					oidcpy(oid, &t->object.oid);
+					return 0;
+				}
+			}
+		}
 	}
 
 	/*

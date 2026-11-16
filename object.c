@@ -229,7 +229,9 @@ enum peel_status peel_object_ext(struct repository *r,
 	}
 
 	while (o && o->type == OBJ_TAG) {
-		o = parse_object(r, &o->oid);
+		o = parse_object_with_flags(r, &o->oid,
+					    (flags & PEEL_OBJECT_VERIFY_TAGGED_OBJECT_TYPE) ?
+					    0 : PARSE_OBJECT_SKIP_HASH_CHECK);
 		if (o && o->type == OBJ_TAG && ((struct tag *)o)->tagged) {
 			o = ((struct tag *)o)->tagged;
 

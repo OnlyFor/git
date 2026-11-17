@@ -13,7 +13,7 @@
 #include "wildmatch.h"
 #include "object-name.h"
 #include "odb.h"
-#include "odb-warp.h"
+#include "commit-graph.h"
 #include "oid-array.h"
 #include "repo-settings.h"
 #include "repository.h"
@@ -2347,6 +2347,70 @@ static const char *get_refname(struct used_atom *atom, struct ref_array_item *re
 	return show_ref(&atom->u.refname, ref->refname);
 }
 
+/*
+ * The graph contains commit topology and the committer timestamp, but not
+ * object sizes, identities, timezones, messages, or tag headers. Populate
+ * only fields whose complete value is available, without fabricating an
+ * object buffer that could escape into the parsed-object cache.
+ */
+static int grab_commit_graph_values(struct ref_array_item *ref, int deref,
+				    struct expand_data *oi)
+{
+	struct commit *commit;
+	int i, eaten = 0;
+
+	if (!oi->info.contentp || oi->info.sizep || oi->info.disk_sizep ||
+	    oi->info.delta_base_oid || oi->info.mtimep || oi->info.source_infop)
+		return -1;
+
+	for (i = 0; i < used_atom_cnt; i++) {
+		struct used_atom *atom = &used_atom[i];
+
+		if (!!deref != (atom->name[0] == '*') ||
+		    atom->source != SOURCE_OBJ)
+			continue;
+		switch (atom->atom_type) {
+		case ATOM_TREE:
+		case ATOM_PARENT:
+		case ATOM_NUMPARENT:
+			break;
+		case ATOM_COMMITTERDATE:
+		case ATOM_CREATORDATE:
+			/* Formatted dates require the original timezone. */
+			if (atom->in_format || strchr(atom->name, ':'))
+				return -1;
+			break;
+		default:
+			return -1;
+		}
+	}
+
+	commit = lookup_commit_in_graph(the_repository, &oi->oid);
+	if (!commit)
+		return -1;
+
+	oi->type = OBJ_COMMIT;
+	oi->maybe_object = &commit->object;
+	/* maybe_object makes this independent of any raw object buffer. */
+	if (grab_commit_values(ref->value, deref, oi, ref->refname,
+			       NULL, &eaten))
+		BUG("unable to use parsed commit from graph");
+	for (i = 0; i < used_atom_cnt; i++) {
+		struct used_atom *atom = &used_atom[i];
+		struct atom_value *v = &ref->value[i];
+
+		if (!!deref != (atom->name[0] == '*'))
+			continue;
+		if (atom->atom_type == ATOM_COMMITTERDATE ||
+		    atom->atom_type == ATOM_CREATORDATE) {
+			v->value = commit->date;
+			v->s = xstrfmt("%"PRItime, commit->date);
+		}
+	}
+	grab_common_values(ref->value, deref, oi);
+	return 0;
+}
+
 static int get_object(struct ref_array_item *ref, int deref,
 		      struct expand_data *oi, struct strbuf *err)
 {
@@ -2355,6 +2419,9 @@ static int get_object(struct ref_array_item *ref, int deref,
 	int ret;
 
 	oi->maybe_object = NULL;
+
+	if (!grab_commit_graph_values(ref, deref, oi))
+		return 0;
 
 	if (oi->info.contentp) {
 		/* We need to know that to use parse_object_buffer properly */
@@ -2371,33 +2438,6 @@ static int get_object(struct ref_array_item *ref, int deref,
 		return 0;
 	}
 
-	if (oi->info.contentp && !oi->info.disk_sizep &&
-	    !oi->info.delta_base_oid && !oi->info.mtimep &&
-	    !oi->info.source_infop) {
-		int i, can_warp = 1;
-		for (i = 0; i < used_atom_cnt; i++) {
-			enum atom_type at = used_atom[i].atom_type;
-			if (!!deref != (used_atom[i].name[0] == '*') ||
-			    used_atom[i].source != SOURCE_OBJ)
-				continue;
-			if (at != ATOM_TREE && at != ATOM_PARENT &&
-			    at != ATOM_NUMPARENT && at != ATOM_OBJECT &&
-			    at != ATOM_TYPE &&
-			    !((at == ATOM_COMMITTERDATE || at == ATOM_TAGGERDATE ||
-			       at == ATOM_CREATORDATE) &&
-			      !used_atom[i].in_format && !strchr(used_atom[i].name, ':'))) {
-				can_warp = 0;
-				break;
-			}
-		}
-		if (can_warp &&
-		    !odb_warp_synthesize_header(
-			    the_repository, &oi->oid,
-			    (!deref && !is_null_oid(&ref->peeled_oid)) ? &ref->peeled_oid : NULL,
-			    &oi->type, &oi->size, &oi->content))
-			goto warped_content;
-	}
-
 	if (odb_read_object_info_extended(the_repository->objects, &oi->oid, &oi->info,
 					  OBJECT_INFO_LOOKUP_REPLACE)) {
 		ret = strbuf_addf_ret(err, -1, _("missing object %s for %s"),
@@ -2407,7 +2447,6 @@ static int get_object(struct ref_array_item *ref, int deref,
 	if (oi->info.disk_sizep && oi->disk_size < 0)
 		BUG("Object size is less than zero.");
 
-warped_content:
 	if (oi->info.contentp) {
 		ret = grab_values(ref->value, deref, oi, ref->refname, err, &eaten);
 		if (ret < 0)

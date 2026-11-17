@@ -146,7 +146,7 @@ static struct commit *deref_without_lazy_fetch(const struct object_id *oid,
 	if (commit) {
 		static int check_graph_oids = -1;
 		if (check_graph_oids < 0)
-			check_graph_oids = git_env_bool("GIT_FETCH_CHECK_GRAPH_OIDS", 0);
+			check_graph_oids = git_env_bool("GIT_FETCH_CHECK_GRAPH_OIDS", 1);
 		if (mark_tags_complete_and_check_obj_db && check_graph_oids) {
 			if (!odb_has_object(the_repository->objects, oid,
 					    ODB_HAS_OBJECT_RECHECK_PACKED))
@@ -163,7 +163,7 @@ static struct commit *deref_without_lazy_fetch(const struct object_id *oid,
 			struct tag *tag = (struct tag *)
 				parse_object(the_repository, oid);
 
-			if (!tag->tagged)
+			if (!tag || !tag->tagged)
 				return NULL;
 			if (mark_tags_complete_and_check_obj_db)
 				tag->object.flags |= COMPLETE;

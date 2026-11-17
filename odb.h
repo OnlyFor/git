@@ -70,6 +70,9 @@ struct object_database {
 	unsigned replace_map_initialized : 1;
 	pthread_mutex_t replace_mutex; /* protect object replace functions */
 
+	/* Lazily loaded packed-refs OID-to-peeled-OID metadata. */
+	struct oidmap *warp_peeled_tags;
+
 	struct commit_graph *commit_graph;
 	unsigned commit_graph_attempted : 1; /* if loading has been attempted */
 

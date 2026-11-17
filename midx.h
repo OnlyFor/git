@@ -38,6 +38,7 @@ struct strvec;
 
 struct multi_pack_index {
 	struct odb_source_packed *source;
+	struct odb_warp_type_bitmaps *warp_type_bitmaps;
 
 	const unsigned char *data;
 	size_t data_len;

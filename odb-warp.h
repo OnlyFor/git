@@ -6,6 +6,9 @@
 struct commit;
 struct object;
 struct repository;
+struct multi_pack_index;
+
+void odb_warp_free_type_bitmaps(struct multi_pack_index *m);
 
 /*
  * Centralized fast-metadata ("Warp") read layer for Git on S3/Rclone VFS.
@@ -16,7 +19,7 @@ struct repository;
  * back to opening or reading large .pack files.
  *
  * All functions gracefully return -1, 0, or NULL when auxiliary files are absent
- * or do not cover the target object, introducing zero extra IO.
+ * or do not cover the target object. Loading metadata can itself require IO.
  */
 
 int odb_warp_read_object_info(struct object_database *odb,
@@ -39,13 +42,6 @@ struct commit *odb_warp_deref_to_commit(struct repository *r,
 
 const struct object_id *odb_warp_lookup_peeled_tag(struct repository *r,
 						   const struct object_id *oid);
-
-int odb_warp_synthesize_header(struct repository *r,
-			       const struct object_id *oid,
-			       const struct object_id *peeled_hint,
-			       enum object_type *type_out,
-			       size_t *size_out,
-			       void **content_out);
 
 void odb_warp_set_quiet_walk(int v);
 
@@ -75,87 +71,57 @@ int odb_warp_is_midx_bitmapped_tree(struct repository *r,
 struct odb_warp_peeled_tag_entry {
 	struct oidmap_entry entry;
 	struct object_id peeled_oid;
-	char *tag_name;
 };
 
-static struct oidmap odb_warp_peeled_tags = OIDMAP_INIT;
-static struct repository *odb_warp_peeled_tags_repo;
-static int odb_warp_peeled_tags_loaded;
+static void odb_warp_clear_peeled_tags(struct object_database *odb)
+{
+	if (odb->warp_peeled_tags) {
+		oidmap_clear(odb->warp_peeled_tags, 1);
+		FREE_AND_NULL(odb->warp_peeled_tags);
+	}
+}
 
 static void odb_warp_ensure_peeled_tags(struct repository *r)
 {
 	char *path;
 	FILE *fp;
-	char line[1024];
+	struct strbuf line = STRBUF_INIT;
 	struct object_id last_oid;
-	char last_name[512];
 	int has_last = 0;
 
-	if (!r || !r->gitdir)
-		return;
-	if (odb_warp_peeled_tags_loaded && odb_warp_peeled_tags_repo == r)
+	if (!r || !r->gitdir || r->objects->warp_peeled_tags)
 		return;
 
-	if (odb_warp_peeled_tags_loaded)
-		oidmap_clear(&odb_warp_peeled_tags, 1);
-	oidmap_init(&odb_warp_peeled_tags, 0);
-	odb_warp_peeled_tags_repo = r;
-	odb_warp_peeled_tags_loaded = 1;
-
+	CALLOC_ARRAY(r->objects->warp_peeled_tags, 1);
+	oidmap_init(r->objects->warp_peeled_tags, 0);
 	path = repo_git_path(r, "packed-refs");
 	fp = fopen(path, "r");
 	free(path);
 	if (!fp)
 		return;
 
-	while (fgets(line, sizeof(line), fp)) {
-		if (line[0] == '#') {
-			has_last = 0;
-			continue;
-		}
-		if (line[0] == '^') {
+	while (!strbuf_getline(&line, fp)) {
+		const char *end;
+
+		if (line.buf[0] == '^') {
 			struct object_id peeled;
-			const char *end;
 			if (has_last &&
-			    !parse_oid_hex_algop(line + 1, &peeled, &end, r->hash_algo) &&
-			    (*end == '\n' || *end == '\r' || *end == '\0')) {
-				struct odb_warp_peeled_tag_entry *e, *old;
-				e = xmalloc(sizeof(*e));
+			    !parse_oid_hex_algop(line.buf + 1, &peeled, &end, r->hash_algo) &&
+			    !*end) {
+				struct odb_warp_peeled_tag_entry *e;
+				CALLOC_ARRAY(e, 1);
 				oidcpy(&e->entry.oid, &last_oid);
 				oidcpy(&e->peeled_oid, &peeled);
-				e->tag_name = xstrdup(last_name);
-				old = oidmap_put(&odb_warp_peeled_tags, e);
-				if (old) {
-					free(old->tag_name);
-					free(old);
-				}
+				free(oidmap_put(r->objects->warp_peeled_tags, e));
 			}
 			has_last = 0;
-			continue;
-		}
-		{
-			const char *end;
-			if (!parse_oid_hex_algop(line, &last_oid, &end, r->hash_algo) &&
-			    *end == ' ') {
-				const char *refname = end + 1;
-				const char *short_name = refname;
-				size_t len;
-				if (!skip_prefix(refname, "refs/tags/", &short_name)) {
-					const char *slash = strrchr(refname, '/');
-					if (slash)
-						short_name = slash + 1;
-				}
-				len = strcspn(short_name, "\r\n");
-				if (len >= sizeof(last_name))
-					len = sizeof(last_name) - 1;
-				memcpy(last_name, short_name, len);
-				last_name[len] = '\0';
-				has_last = 1;
-			} else {
-				has_last = 0;
-			}
+		} else {
+			has_last = !parse_oid_hex_algop(line.buf, &last_oid, &end,
+						       r->hash_algo) &&
+				   *end == ' ';
 		}
 	}
+	strbuf_release(&line);
 	fclose(fp);
 }
 
@@ -165,7 +131,9 @@ static const struct odb_warp_peeled_tag_entry *odb_warp_lookup_peeled_tag_entry(
 	if (!r || !oid)
 		return NULL;
 	odb_warp_ensure_peeled_tags(r);
-	return oidmap_get(&odb_warp_peeled_tags, oid);
+	if (!r->objects->warp_peeled_tags)
+		return NULL;
+	return oidmap_get(r->objects->warp_peeled_tags, oid);
 }
 
 const struct object_id *odb_warp_lookup_peeled_tag(struct repository *r,
@@ -180,12 +148,12 @@ const struct object_id *odb_warp_lookup_peeled_tag(struct repository *r,
  * once to extract only the 4 EWAH type bitmaps (commits, trees, blobs, tags)
  * without opening any .pack or individual pack .idx/.rev files.
  */
-static struct multi_pack_index *odb_warp_bm_midx;
-static int odb_warp_bm_attempted;
-static struct bitmap *odb_warp_bm_commits;
-static struct bitmap *odb_warp_bm_trees;
-static struct bitmap *odb_warp_bm_blobs;
-static struct bitmap *odb_warp_bm_tags;
+struct odb_warp_type_bitmaps {
+	struct bitmap *commits;
+	struct bitmap *trees;
+	struct bitmap *blobs;
+	struct bitmap *tags;
+};
 
 static struct bitmap *odb_warp_read_type_bitmap(const unsigned char *map,
 						size_t map_size,
@@ -209,28 +177,27 @@ static struct bitmap *odb_warp_read_type_bitmap(const unsigned char *map,
 	return bm;
 }
 
-static void odb_warp_free_type_bitmaps(void)
+void odb_warp_free_type_bitmaps(struct multi_pack_index *m)
 {
-	if (odb_warp_bm_commits) {
-		bitmap_free(odb_warp_bm_commits);
-		odb_warp_bm_commits = NULL;
-	}
-	if (odb_warp_bm_trees) {
-		bitmap_free(odb_warp_bm_trees);
-		odb_warp_bm_trees = NULL;
-	}
-	if (odb_warp_bm_blobs) {
-		bitmap_free(odb_warp_bm_blobs);
-		odb_warp_bm_blobs = NULL;
-	}
-	if (odb_warp_bm_tags) {
-		bitmap_free(odb_warp_bm_tags);
-		odb_warp_bm_tags = NULL;
-	}
+	struct odb_warp_type_bitmaps *bm = m->warp_type_bitmaps;
+
+	if (!bm)
+		return;
+	if (bm->commits)
+		bitmap_free(bm->commits);
+	if (bm->trees)
+		bitmap_free(bm->trees);
+	if (bm->blobs)
+		bitmap_free(bm->blobs);
+	if (bm->tags)
+		bitmap_free(bm->tags);
+	FREE_AND_NULL(m->warp_type_bitmaps);
 }
 
 static int odb_warp_ensure_type_bitmaps(struct multi_pack_index *m)
 {
+	struct odb_warp_type_bitmaps *bm;
+	struct bitmap_disk_header *header;
 	struct strbuf bm_name = STRBUF_INIT;
 	const struct git_hash_algo *algo;
 	size_t header_size, map_size, map_pos;
@@ -240,12 +207,11 @@ static int odb_warp_ensure_type_bitmaps(struct multi_pack_index *m)
 
 	if (!m || m->base_midx || m->has_chain)
 		return -1;
-	if (odb_warp_bm_attempted && odb_warp_bm_midx == m)
-		return odb_warp_bm_blobs ? 0 : -1;
+	if (m->warp_type_bitmaps)
+		return m->warp_type_bitmaps->blobs ? 0 : -1;
 
-	odb_warp_free_type_bitmaps();
-	odb_warp_bm_midx = m;
-	odb_warp_bm_attempted = 1;
+	CALLOC_ARRAY(m->warp_type_bitmaps, 1);
+	bm = m->warp_type_bitmaps;
 
 	if (m->chunk_revindex &&
 	    m->chunk_revindex_len != st_mult(sizeof(uint32_t), m->num_objects))
@@ -275,21 +241,26 @@ static int odb_warp_ensure_type_bitmaps(struct multi_pack_index *m)
 	map = xmmap(NULL, map_size, PROT_READ, MAP_PRIVATE, fd, 0);
 	close(fd);
 
-	if (memcmp(map, BITMAP_IDX_SIGNATURE, sizeof(BITMAP_IDX_SIGNATURE)) != 0) {
+	header = (void *)map;
+	if (memcmp(header->magic, BITMAP_IDX_SIGNATURE, sizeof(BITMAP_IDX_SIGNATURE)) ||
+	    ntohs(header->version) != 1 ||
+	    !(ntohs(header->options) & BITMAP_OPT_FULL_DAG) ||
+	    !hasheq(header->checksum, midx_get_checksum_hash(m), algo)) {
 		munmap(map, map_size);
 		return -1;
 	}
 
 	map_pos = header_size;
-	odb_warp_bm_commits = odb_warp_read_type_bitmap(map, map_size, &map_pos);
-	odb_warp_bm_trees = odb_warp_read_type_bitmap(map, map_size, &map_pos);
-	odb_warp_bm_blobs = odb_warp_read_type_bitmap(map, map_size, &map_pos);
-	odb_warp_bm_tags = odb_warp_read_type_bitmap(map, map_size, &map_pos);
+	bm->commits = odb_warp_read_type_bitmap(map, map_size - algo->rawsz, &map_pos);
+	bm->trees = odb_warp_read_type_bitmap(map, map_size - algo->rawsz, &map_pos);
+	bm->blobs = odb_warp_read_type_bitmap(map, map_size - algo->rawsz, &map_pos);
+	bm->tags = odb_warp_read_type_bitmap(map, map_size - algo->rawsz, &map_pos);
 	munmap(map, map_size);
 
-	if (!odb_warp_bm_commits || !odb_warp_bm_trees ||
-	    !odb_warp_bm_blobs || !odb_warp_bm_tags) {
-		odb_warp_free_type_bitmaps();
+	if (!bm->commits || !bm->trees ||
+	    !bm->blobs || !bm->tags) {
+		odb_warp_free_type_bitmaps(m);
+		CALLOC_ARRAY(m->warp_type_bitmaps, 1);
 		return -1;
 	}
 	return 0;
@@ -298,20 +269,22 @@ static int odb_warp_ensure_type_bitmaps(struct multi_pack_index *m)
 static enum object_type odb_warp_lookup_midx_bitmap_type(struct multi_pack_index *m,
 							 uint32_t midx_pos)
 {
+	struct odb_warp_type_bitmaps *bm;
 	uint32_t pack_pos;
 
 	if (odb_warp_ensure_type_bitmaps(m) < 0)
 		return OBJ_NONE;
+	bm = m->warp_type_bitmaps;
 	if (midx_to_pack_pos(m, midx_pos, &pack_pos) < 0)
 		return OBJ_NONE;
 
-	if (bitmap_get(odb_warp_bm_blobs, pack_pos))
+	if (bitmap_get(bm->blobs, pack_pos))
 		return OBJ_BLOB;
-	if (bitmap_get(odb_warp_bm_trees, pack_pos))
+	if (bitmap_get(bm->trees, pack_pos))
 		return OBJ_TREE;
-	if (bitmap_get(odb_warp_bm_commits, pack_pos))
+	if (bitmap_get(bm->commits, pack_pos))
 		return OBJ_COMMIT;
-	if (bitmap_get(odb_warp_bm_tags, pack_pos))
+	if (bitmap_get(bm->tags, pack_pos))
 		return OBJ_TAG;
 	return OBJ_NONE;
 }
@@ -501,43 +474,17 @@ void odb_warp_peel_to_tree_oid(struct repository *r,
 }
 
 struct object *odb_warp_parse_object(struct repository *r,
-				     const struct object_id *oid,
+				     const struct object_id *oid UNUSED,
 				     const struct object_id *repl,
 				     unsigned flags)
 {
-	int skip_hash = !!(flags & PARSE_OBJECT_SKIP_HASH_CHECK);
 	struct commit *commit;
-	const struct odb_warp_peeled_tag_entry *peeled_entry;
-	enum object_type bm_type;
 
-	if (!r || (!skip_hash && save_commit_buffer))
+	if (!r || !(flags & PARSE_OBJECT_SKIP_HASH_CHECK))
 		return NULL;
 
 	commit = lookup_commit_in_graph(r, repl);
-	if (commit)
-		return &commit->object;
-
-	bm_type = odb_warp_find_midx_type(r, repl);
-	if (bm_type != OBJ_NONE && bm_type != OBJ_TAG)
-		return NULL;
-
-	peeled_entry = odb_warp_lookup_peeled_tag_entry(r, repl);
-	if (peeled_entry) {
-		commit = lookup_commit_in_graph(r, &peeled_entry->peeled_oid);
-		if (commit) {
-			struct tag *tag = lookup_tag(r, oid);
-			if (tag) {
-				tag->object.parsed = 1;
-				tag->tagged = &commit->object;
-				tag->date = commit->date;
-				if (!tag->tag)
-					tag->tag = xstrdup(peeled_entry->tag_name);
-				return &tag->object;
-			}
-		}
-	}
-
-	return NULL;
+	return commit ? &commit->object : NULL;
 }
 
 struct commit *odb_warp_deref_to_commit(struct repository *r,
@@ -556,15 +503,20 @@ struct commit *odb_warp_deref_to_commit(struct repository *r,
 	if (commit)
 		return commit;
 
+	/*
+	 * A fully peeled OID is sufficient for negotiation tips, but not for
+	 * marking a chain of tag objects COMPLETE. Let the caller walk the
+	 * actual chain in that case.
+	 */
+	if (mark_tag_flags)
+		return NULL;
+
 	obj = lookup_object(r, oid);
 	if (obj) {
 		if (obj->type == OBJ_TREE || obj->type == OBJ_BLOB)
 			return NULL;
-		if (obj->type == OBJ_TAG && ((struct tag *)obj)->tagged) {
-			if (mark_tag_flags)
-				obj->flags |= mark_tag_flags;
+		if (obj->type == OBJ_TAG && ((struct tag *)obj)->tagged)
 			return lookup_commit_in_graph(r, &((struct tag *)obj)->tagged->oid);
-		}
 	}
 
 	bm_type = odb_warp_find_midx_type(r, oid);
@@ -572,72 +524,10 @@ struct commit *odb_warp_deref_to_commit(struct repository *r,
 		return NULL;
 
 	peeled_entry = odb_warp_lookup_peeled_tag_entry(r, oid);
-	if (peeled_entry) {
-		commit = lookup_commit_in_graph(r, &peeled_entry->peeled_oid);
-		if (commit) {
-			struct tag *tag = lookup_tag(r, oid);
-			if (tag) {
-				tag->object.parsed = 1;
-				tag->tagged = &commit->object;
-				tag->date = commit->date;
-				if (!tag->tag)
-					tag->tag = xstrdup(peeled_entry->tag_name);
-				if (mark_tag_flags)
-					tag->object.flags |= mark_tag_flags;
-			}
-			return commit;
-		}
-	}
+	if (peeled_entry)
+		return lookup_commit_in_graph(r, &peeled_entry->peeled_oid);
 
 	return NULL;
-}
-
-int odb_warp_synthesize_header(struct repository *r,
-			       const struct object_id *oid,
-			       const struct object_id *peeled_hint,
-			       enum object_type *type_out,
-			       size_t *size_out,
-			       void **content_out)
-{
-	struct commit *c;
-	const struct object_id *peeled;
-
-	if (!r || !oid)
-		return -1;
-
-	c = lookup_commit_in_graph(r, oid);
-	if (c) {
-		struct strbuf sb = STRBUF_INIT;
-		struct commit_list *p;
-
-		strbuf_addf(&sb, "tree %s\n", oid_to_hex(get_commit_tree_oid(c)));
-		for (p = c->parents; p; p = p->next)
-			strbuf_addf(&sb, "parent %s\n", oid_to_hex(&p->item->object.oid));
-		strbuf_addf(&sb, "author <> %"PRItime" +0000\n", c->date);
-		strbuf_addf(&sb, "committer <> %"PRItime" +0000\n\n", c->date);
-
-		*type_out = OBJ_COMMIT;
-		*content_out = strbuf_detach(&sb, size_out);
-		return 0;
-	}
-
-	peeled = peeled_hint ? peeled_hint : odb_warp_lookup_peeled_tag(r, oid);
-	if (peeled) {
-		c = lookup_commit_in_graph(r, peeled);
-		if (c) {
-			struct strbuf sb = STRBUF_INIT;
-
-			strbuf_addf(&sb, "object %s\ntype commit\ntag v\n",
-				    oid_to_hex(peeled));
-			strbuf_addf(&sb, "tagger <> %"PRItime" +0000\n\n", c->date);
-
-			*type_out = OBJ_TAG;
-			*content_out = strbuf_detach(&sb, size_out);
-			return 0;
-		}
-	}
-
-	return -1;
 }
 
 #endif /* ODB_WARP_IMPLEMENTATION */

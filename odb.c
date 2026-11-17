@@ -1104,6 +1104,7 @@ void odb_close(struct object_database *o)
 	for (source = o->sources; source; source = source->next)
 		odb_source_close(source);
 	close_commit_graph(o);
+	odb_warp_clear_peeled_tags(o);
 }
 
 static void odb_free_sources(struct object_database *o)
@@ -1150,6 +1151,7 @@ void odb_prepare(struct object_database *o, enum odb_prepare_flags flags)
 	 * reprocess GIT_ALTERNATE_OBJECT_DIRECTORIES here.
 	 */
 	if (flags & ODB_PREPARE_FLUSH_CACHES) {
+		odb_warp_clear_peeled_tags(o);
 		odb_prepare_alternates(o, NULL);
 		o->object_count_valid = 0;
 	}

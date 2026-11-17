@@ -567,12 +567,6 @@ static int open_packed_git_1(struct packed_git *p)
 	} else if (p->pack_size != st.st_size)
 		return error("packfile %s size changed", p->pack_name);
 
-	if (skip_idx && !p->index_data) {
-		if (p->pack_size < (off_t)(sizeof(hdr) + hashsz))
-			return error("file %s is far too short to be a packfile", p->pack_name);
-		return 0;
-	}
-
 	/* Verify we recognize this pack file format. */
 	read_result = read_in_full(p->pack_fd, &hdr, sizeof(hdr));
 	if (read_result < 0)
@@ -585,6 +579,16 @@ static int open_packed_git_1(struct packed_git *p)
 		return error("packfile %s is version %"PRIu32" and not"
 			" supported (try upgrading GIT to a newer version)",
 			p->pack_name, ntohl(hdr.hdr_version));
+
+	/*
+	 * MIDX-backed reads may defer the individual index, but still need a
+	 * valid pack header. A loaded commit-graph says nothing about its format.
+	 */
+	if (skip_idx && !p->index_data) {
+		if (p->pack_size < (off_t)(sizeof(hdr) + hashsz))
+			return error("file %s is far too short to be a packfile", p->pack_name);
+		return 0;
+	}
 
 	/* Verify the pack matches its index. */
 	if (p->num_objects != ntohl(hdr.hdr_entries))

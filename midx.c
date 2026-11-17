@@ -7,6 +7,7 @@
 #include "packfile.h"
 #include "hash-lookup.h"
 #include "midx.h"
+#include "odb-warp.h"
 #include "progress.h"
 #include "trace2.h"
 #include "chunk-format.h"
@@ -403,6 +404,7 @@ void close_midx(struct multi_pack_index *m)
 	if (!m)
 		return;
 
+	odb_warp_free_type_bitmaps(m);
 	close_midx(m->base_midx);
 
 	munmap((unsigned char *)m->data, m->data_len);

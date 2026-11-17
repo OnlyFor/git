@@ -144,10 +144,8 @@ static struct commit *deref_without_lazy_fetch(const struct object_id *oid,
 	commit = odb_warp_deref_to_commit(the_repository, oid,
 					  mark_tags_complete_and_check_obj_db ? COMPLETE : 0);
 	if (commit) {
-		static int check_graph_oids = -1;
-		if (check_graph_oids < 0)
-			check_graph_oids = git_env_bool("GIT_FETCH_CHECK_GRAPH_OIDS", 1);
-		if (mark_tags_complete_and_check_obj_db && check_graph_oids) {
+		if (mark_tags_complete_and_check_obj_db &&
+		    odb_warp_check_fetch_graph_objects()) {
 			if (!odb_has_object(the_repository->objects, oid,
 					    ODB_HAS_OBJECT_RECHECK_PACKED))
 				die_in_commit_graph_only(oid);
@@ -2164,6 +2162,8 @@ struct ref *fetch_pack(struct fetch_pack_args *args,
 	struct oid_array shallows_scratch = OID_ARRAY_INIT;
 
 	fetch_pack_setup();
+	args->use_thin_pack = odb_warp_fetch_use_thin_pack(the_repository,
+						       args->use_thin_pack);
 	if (nr_sought)
 		nr_sought = remove_duplicates_in_refs(sought, nr_sought);
 

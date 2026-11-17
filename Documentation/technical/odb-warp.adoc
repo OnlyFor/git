@@ -1,0 +1,57 @@
+ODB Warp maintenance boundaries
+===============================
+
+Warp reduces reads from remote object storage using commit-graph, peeled-ref,
+MIDX, and bitmap metadata. The interface is declared in odb-warp.h; its
+implementation and policy switches live in odb-warp.c.
+
+Policy
+------
+
+* fetch.thin=false disables the thin-pack request before the shared fetch-pack
+  entry point dispatches to protocol v0/v1 or v2. It also applies when a smart
+  HTTP helper invokes fetch-pack. An unset or true value preserves the caller's
+  request. There is no change to push, and no automatic retry with different
+  negotiation semantics after part of a pack has arrived.
+* GIT_FETCH_CHECK_GRAPH_OIDS defaults to true. A graph hit alone does not prove
+  that an object still exists in the object database.
+* GIT_INDEX_PACK_NO_COLLISION_CHECK defaults to false. index-pack's strict mode
+  continues to force collision checks.
+* GIT_CONNECTED_NO_OBJECTS defaults to false. Setting it skips object-level
+  connectivity traversal; it is an explicit integrity/performance tradeoff.
+* The decision to defer an individual pack index is centralized here. Opening
+  the pack and validating its header remain the responsibility of packfile.c.
+
+Metadata
+--------
+
+MIDX type-bitmap caches belong to each MIDX and are freed with it. Peeled-ref
+caches belong to the object database and are cleared when it closes or refreshes.
+Metadata can answer only the fields it contains. In particular, peeled refs
+do not contain direct tag targets, tag names or tagger timestamps, and the
+commit-graph does not contain raw object sizes or author identities.
+
+Call-site responsibilities
+--------------------------
+
+Keep protocol encoding and index-pack invocation in fetch-pack.c, pack parsing
+and validation in packfile.c, and atom selection/formatting in ref-filter.c.
+These modules call Warp's policy or metadata interfaces; moving their private
+structures into Warp would couple unrelated subsystems and make rebasing harder.
+
+The existing quiet-walk shortcuts and metadata-only existence answers retain
+their existing trust assumptions. This organization change does not make stale
+metadata a proof of object availability or repair missing packs.
+
+Operating on remote storage
+---------------------------
+
+For repositories where cold external delta bases are expensive, select
+fetch.thin=false per repository or pass it with git -c on a fetch invocation.
+Compare upstream transfer bytes with remote-storage bytes; a larger incoming
+pack can cost less than fetching a cold base from remote storage. This switch
+does not imply that the entire fetch has no reads of old packs.
+
+Preferring recent non-MIDX packs for external bases is a separate possible
+optimization. It is not implemented here: disabling thin packs avoids those
+dependencies altogether, while retaining the normal lookup order elsewhere.

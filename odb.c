@@ -27,7 +27,6 @@
 #include "tmp-objdir.h"
 #include "trace2.h"
 #include "write-or-die.h"
-#define ODB_WARP_IMPLEMENTATION
 #include "odb-warp.h"
 
 /*

@@ -145,3 +145,16 @@ remove the value for the `fetch.bundleCreationToken` value before fetching.
 `never`;;
 	Never create or modify the `remotes/<name>/HEAD` symbolic-ref.
 --
+
+`fetch.thin`::
+	When false, do not request thin packs during smart fetch negotiation.
+	The received pack must resolve its deltas using objects within that
+	pack, avoiding local reads of external delta bases. This can help when
+	the local object database is on high-latency remote storage, at the
+	cost of potentially larger transfers from the server.
++
+Defaults to true, which preserves the command's normal thin-pack behavior.
+In particular, `git fetch-pack` still requires `--thin` to request thin packs.
+This setting applies to both protocol v0/v1 and v2, including smart HTTP
+fetches. It does not change push behavior, disable object validation, or
+guarantee that other fetch phases will avoid reading existing objects.

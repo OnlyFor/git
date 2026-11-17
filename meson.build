@@ -430,6 +430,7 @@ libgit_sources = [
   'object-file.c',
   'object-name.c',
   'object.c',
+  'odb-warp.c',
   'odb.c',
   'odb/source.c',
   'odb/source-files.c',

@@ -19,6 +19,7 @@
 #include "tree.h"
 #include "object-file.h"
 #include "odb.h"
+#include "odb-warp.h"
 #include "odb/streaming.h"
 #include "midx.h"
 #include "commit-graph.h"
@@ -535,8 +536,7 @@ static int open_packed_git_1(struct packed_git *p)
 	ssize_t read_result;
 	const unsigned hashsz = p->repo->hash_algo->rawsz;
 
-	int skip_idx = p->multi_pack_index && p->repo &&
-		p->repo->objects && p->repo->objects->commit_graph;
+	int skip_idx = odb_warp_can_defer_pack_index(p);
 
 	if (!skip_idx && open_pack_index(p))
 		return error("packfile %s index unavailable", p->pack_name);

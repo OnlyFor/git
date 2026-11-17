@@ -806,4 +806,23 @@ test_expect_success 'ls-remote outside repo does not segfault with fetch refspec
 		ls-remote origin
 '
 
+. "$TEST_DIRECTORY/lib-fetch-thin.sh"
+
+test_expect_success 'setup HTTP fetch.thin history' '
+	setup_fetch_thin &&
+	git clone --bare thin-source "$HTTPD_DOCUMENT_ROOT_PATH/thin-source.git"
+'
+
+for thin_version in 0 2
+do
+	for thin_mode in default true false override
+	do
+		test_expect_success "smart HTTP v$thin_version fetch.thin=$thin_mode" '
+			rm -f commands packets &&
+			check_fetch_thin "$HTTPD_URL/smart/thin-source.git" \
+				"$thin_version" "$thin_mode"
+		'
+	done
+done
+
 test_done

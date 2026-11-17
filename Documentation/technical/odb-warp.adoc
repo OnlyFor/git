@@ -55,3 +55,59 @@ does not imply that the entire fetch has no reads of old packs.
 Preferring recent non-MIDX packs for external bases is a separate possible
 optimization. It is not implemented here: disabling thin packs avoids those
 dependencies altogether, while retaining the normal lookup order elsewhere.
+
+Upstream integration discipline
+------------------------------
+
+Keep the current C module boundary stable. Concentrate metadata queries and
+Warp policy in odb-warp.c, but retain the small call sites next to the upstream
+operation they affect. Do not copy whole upstream functions into Warp or add a
+generic callback framework merely to reduce the number of edited files.
+
+In particular:
+
+* fetch-pack owns negotiation and command construction. Apply fetch.thin once
+  before protocol dispatch; do not duplicate it in remote-curl or the wrapper.
+* packfile owns pack validation and error handling. Warp only supplies the
+  decision about deferring the index.
+* odb and MIDX owners retain allocation, refresh, and teardown hooks for their
+  caches. A global cache would reduce visible hooks but weaken lifetime safety.
+* ref-filter owns atom selection and formatting. Warp provides only information
+  actually represented by metadata.
+* Preserve upstream fallback paths when metadata is absent or insufficient.
+  Do not remove tag-chain traversal merely because a final peeled OID is known.
+
+Keep structural moves separate from behavioral changes in future commits.
+When merging upstream, review callers as well as Warp: changed flags, object
+lifetimes, or validation requirements can invalidate an unchanged helper.
+Use t5336 for metadata semantics, t5575 for thin negotiation, and t5551 for
+smart HTTP, alongside the upstream tests for the touched subsystem.
+The shared thin tests explicitly select skipping to cover the deployed mode.
+
+Negotiation and transfer accounting
+-----------------------------------
+
+Skipping reduces advertised haves and can reduce round trips; it still parses
+commits while walking parents. A usable commit-graph avoids reading packed
+commit contents for covered commits. MIDX and idx locate objects but cannot
+supply missing commit parents; type bitmaps cannot replace the commit-graph.
+Annotated-tag chains, uncovered commits, alternates, and cold metadata can
+still cause reads. The remote-https process lifetime also includes discovery,
+HTTP/proxy waits, server work, and streaming; it is not a negotiation timer.
+
+Maintain graph coverage after every successful daily fetch. A wrapper that
+selects only the newest idx can miss packs when multiple packs arrive, and
+silently ignoring graph-write errors hides coverage gaps. --no-changed-paths
+avoids changed-path filter work, but does not guarantee zero old-pack reads
+when graph construction needs previously uncovered ancestors.
+
+Compare incoming pack bytes before index-pack repairs thin packs, using the
+same initial repository and fixed server refs. Reusing the already-fetched
+client or comparing final on-disk packs is not a valid wire-size comparison.
+Measure remote-storage bytes separately: GIT_TRACE_PACK_ACCESS records object
+accesses, not downloaded bytes, metadata IO, or VFS read-ahead.
+
+Disabling thin does not disable deltas within the received pack or discard
+negotiated common history. Its extra bytes depend on the external bases that
+would otherwise have been used and the server's alternative representation.
+There is no fixed percentage or relationship to the total old-pack size.

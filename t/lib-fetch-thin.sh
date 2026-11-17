@@ -45,6 +45,7 @@ check_fetch_thin () {
 	GIT_TRACE="$PWD/commands" GIT_TRACE_PACKET="$PWD/packets" \
 	GIT_TRACE_PACK_ACCESS="$PWD/pack-access" \
 	git "$@" -c protocol.version="$thin_protocol" \
+		-c fetch.negotiationAlgorithm=skipping \
 		-c maintenance.auto=false -c fetch.writeCommitGraph=false \
 		-c transfer.unpackLimit=1 -C "$client" fetch \
 		--upload-pack="$thin_uploadpack" "$thin_url" \
